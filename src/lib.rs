@@ -1,6 +1,9 @@
 //! AtomicStampedPtr
 
 #![feature(asm)]
+#![feature(test)]
+
+extern crate test;
 
 use std::cell::UnsafeCell;
 use std::default::Default;
@@ -194,6 +197,13 @@ impl<T> AtomicStampedPtr<T> {
 mod tests {
     use super::{PtrContainer, AtomicStampedPtr, cas_ptr};
     use std::mem;
+    use std::marker::Sync;
+    use std::sync::Arc;
+    use test::Bencher;
+
+    struct T(i32);
+    unsafe impl Sync for T {}
+
     #[test]
     fn test_cas_failure() {
         let a = PtrContainer{ptr: 233 as *mut i32, version: 0};
@@ -204,10 +214,48 @@ mod tests {
     }
 
     #[test]
-    fn test_load() {
-        let n = 5;
-        let p = unsafe { mem::transmute(&n) };
-        let a: AtomicStampedPtr<i32> = AtomicStampedPtr::new(p);
-        assert_eq!(a.load(), (p, 0));
+    fn test_swap() {
+        let a = Arc::new(AtomicStampedPtr::new(0 as *mut T));
+        let threads = (1..10).map(|x| {
+            let a = a.clone();
+            ::std::thread::spawn(move || {
+                let mut p = a.swap(x as *mut T);
+                while p as usize != x - 1 {
+                    p = a.swap(p);
+                }
+            })
+        }).collect::<Vec<_>>();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_compare_exchange() {
+        let a = Arc::new(AtomicStampedPtr::new(0 as *mut T));
+        let threads = (0..1000).map(|_| {
+            let a = a.clone();
+            ::std::thread::spawn(move || {
+                let mut v = 0;
+                while let Err((_, e)) = a.compare_exchange((0 as *mut T, v), 0 as *mut T) {
+                    v = e;
+                }
+            })
+        }).collect::<Vec<_>>();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        assert_eq!(a.load(), (0 as *mut T, 1000));
+    }
+
+    #[bench]
+    fn bench_compare_exchange(r: &mut Bencher) {
+        let a = Arc::new(AtomicStampedPtr::new(0 as *mut T));
+        r.iter(|| {
+            let _ = a.compare_exchange((0 as *mut T, 0), 0 as *mut T);
+        });
     }
 }

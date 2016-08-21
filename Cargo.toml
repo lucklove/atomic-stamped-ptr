@@ -2,5 +2,10 @@
 name = "atomic-stamped-ptr"
 version = "0.1.0"
 authors = ["Jos <gnu.crazier@gmail.com>"]
+description = "AtomicStampedPtr for x86_64"
+documentation = "https://github.com/lucklove/atomic-stamped-ptr"
+homepage = "https://github.com/lucklove/atomic-stamped-ptr"
+repository = "https://github.com/lucklove/atomic-stamped-ptr"
+license = "MIT"
 
 [dependencies]
