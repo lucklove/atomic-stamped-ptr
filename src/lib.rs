@@ -93,15 +93,14 @@ impl<T> AtomicStampedPtr<T> {
     /// ```
     /// use atomic_stamped_ptr::AtomicStampedPtr;
     ///
-    /// let p = Box::into_raw(Box::new(6));
+    /// let p = Box::into_raw(Box::new(0));
     /// let a = AtomicStampedPtr::new(p);
-    /// let b = unsafe { Box::from_raw(a.load()) };
-    /// assert_eq!(*b, 6);
+    /// assert_eq!(a.load(), (p, 0));
     /// ```
-    pub fn load(&self) -> *mut T {
-        let mut dummy = PtrContainer::default();
-        cas_ptr(self.p.get(), &mut dummy, PtrContainer::default());
-        dummy.ptr
+    pub fn load(&self) -> (*mut T, usize) {
+        let mut current = PtrContainer::default();
+        cas_ptr(self.p.get(), &mut current, PtrContainer::default());
+        (current.ptr, current.version)
     }
 
     /// Store a ptr into AtomicStampedPtr and set version to 0.
@@ -114,8 +113,7 @@ impl<T> AtomicStampedPtr<T> {
     /// let a = AtomicStampedPtr::default();
     /// let p = Box::into_raw(Box::new(233));
     /// a.store(p);
-    /// let b = unsafe { Box::from_raw(a.load()) };
-    /// assert_eq!(*b, 233);
+    /// assert_eq!(a.load(), (p, 1));
     /// ```
     pub fn store(&self, ptr: *mut T) {
         self.swap(ptr);
@@ -128,16 +126,11 @@ impl<T> AtomicStampedPtr<T> {
     /// ```
     /// use atomic_stamped_ptr::AtomicStampedPtr;
     ///
-    /// // FIXME: panic if delete this:
-    /// assert_eq!(std::mem::size_of::<AtomicStampedPtr<i32>>(), 16);
-    ///
     /// let p1 = Box::into_raw(Box::new(1));
     /// let p2 = Box::into_raw(Box::new(2));
     /// let a = AtomicStampedPtr::new(p1);
-    /// let b1 = unsafe { Box::from_raw(a.swap(p2)) };
-    /// let b2 = unsafe { Box::from_raw(a.load()) };
-    /// assert_eq!(*b1, 1);
-    /// assert_eq!(*b2, 2);
+    /// assert_eq!(a.swap(p2), p1);
+    /// assert_eq!(a.load(), (p2, 1));
     /// ```  
     pub fn swap(&self, ptr: *mut T) -> *mut T {
         let mut current = PtrContainer::default();
@@ -158,24 +151,42 @@ impl<T> AtomicStampedPtr<T> {
     /// ```
     /// use atomic_stamped_ptr::AtomicStampedPtr;
     ///
-    /// // FIXME: panic if delete this:
-    /// assert_eq!(std::mem::size_of::<AtomicStampedPtr<i32>>(), 16);
-    ///
     /// let p1 = Box::into_raw(Box::new(1));
     /// let p2 = Box::into_raw(Box::new(2));
     /// let a = AtomicStampedPtr::new(p1);
-    /// let b = AtomicStampedPtr::new(p1);
-    /// let b1 = unsafe { Box::from_raw(a.compare_and_swap(&b, p2)) };
-    /// let b2 = unsafe { Box::from_raw(a.load()) };
-    /// assert_eq!(*b1, 1);
-    /// assert_eq!(*b2, 2);
+    /// assert_eq!(a.compare_and_swap((p1, 0), p2), (p1, 0));
+    /// assert_eq!(a.load(), (p2, 1));
     /// ```
-    pub fn compare_and_swap(&self, current: &AtomicStampedPtr<T>, ptr: *mut T) -> *mut T {
-        let raw_ptr = current.p.get();
-        let mut current = unsafe { PtrContainer::new((*raw_ptr).ptr, (*raw_ptr).version) };
+    pub fn compare_and_swap(&self, current: (*mut T, usize), ptr: *mut T) -> (*mut T, usize) {
+        let mut current = PtrContainer::new(current.0, current.1);
         let relief = PtrContainer::new(ptr, current.successor());
         cas_ptr(self.p.get(), &mut current, relief);
-        current.ptr
+        (current.ptr, current.version)
+    }
+
+    /// Stores a value into AtomicStampedPtr if the current value is the same as the `current` value.
+    ///
+    /// The return value is a result indicating whether the new value was written and containing
+    /// the previous value. On success this value is guaranteed to be equal to `current`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use atomic_stamped_ptr::AtomicStampedPtr;
+    ///
+    /// let p = Box::into_raw(Box::new(0));
+    /// let a = AtomicStampedPtr::new(p);
+    /// assert_eq!(a.compare_exchange((p, 1), p), Err((p, 0)));
+    /// assert_eq!(a.compare_exchange((p, 0), p), Ok((p, 0)));
+    /// ```
+    pub fn compare_exchange(&self, current: (*mut T, usize), ptr: *mut T) -> Result<(*mut T, usize), (*mut T, usize)> {
+        let mut current = PtrContainer::new(current.0, current.1);
+        let relief = PtrContainer::new(ptr, current.successor());
+        if cas_ptr(self.p.get(), &mut current, relief) {
+            Ok((current.ptr, current.version))
+        } else {
+            Err((current.ptr, current.version))
+        }
     }
 }
 
@@ -197,6 +208,6 @@ mod tests {
         let n = 5;
         let p = unsafe { mem::transmute(&n) };
         let a: AtomicStampedPtr<i32> = AtomicStampedPtr::new(p);
-        assert_eq!(a.load(), p);
+        assert_eq!(a.load(), (p, 0));
     }
 }
