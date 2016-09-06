@@ -2,16 +2,19 @@
 
 #![feature(asm)]
 #![feature(test)]
+#![feature(heap_api)]
+#![feature(alloc)]
 
+extern crate alloc;
 extern crate test;
 
-use std::cell::UnsafeCell;
 use std::default::Default;
+use alloc::heap::{allocate, deallocate};
 
 /// Main class
 #[derive(Debug)]
 pub struct AtomicStampedPtr<T> {
-    p: UnsafeCell<PtrContainer<T>>,
+    p: *mut PtrContainer<T>,
 }
 
 unsafe impl<T> Send for AtomicStampedPtr<T> {}
@@ -19,12 +22,13 @@ unsafe impl<T> Sync for AtomicStampedPtr<T> {}
 
 impl<T> std::cmp::PartialEq for AtomicStampedPtr<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.p.get() == other.p.get()
+        self.p == other.p
     }
 }
 
 /// Helper class
 #[derive(Debug)]
+#[repr(packed)]
 struct PtrContainer<T> {
     ptr: *mut T,
     version: usize,
@@ -81,11 +85,24 @@ impl<T> Default for AtomicStampedPtr<T> {
     }
 }
 
+impl<T> Drop for AtomicStampedPtr<T> {
+    fn drop(&mut self) {
+        if !self.p.is_null() {
+            unsafe { deallocate(self.p as *mut u8, std::mem::size_of::<PtrContainer<T>>(), 16); }
+        }
+    }
+}
+
 impl<T> AtomicStampedPtr<T> {
     /// Constructor
     pub fn new(p: *mut T) -> Self {
-        AtomicStampedPtr {
-            p: UnsafeCell::new(PtrContainer::new(p, 0)),
+        unsafe {
+            let size = std::mem::size_of::<PtrContainer<T>>();
+            let ptr = allocate(size, 16);
+            std::intrinsics::copy(&PtrContainer::new(p, 0) as *const PtrContainer<T> as *const u8, ptr, size);
+            AtomicStampedPtr {
+                p: ptr as *mut PtrContainer<T>,
+            }
         }
     }
 
@@ -102,7 +119,7 @@ impl<T> AtomicStampedPtr<T> {
     /// ```
     pub fn load(&self) -> (*mut T, usize) {
         let mut current = PtrContainer::default();
-        cas_ptr(self.p.get(), &mut current, PtrContainer::default());
+        cas_ptr(self.p, &mut current, PtrContainer::default());
         (current.ptr, current.version)
     }
 
@@ -138,7 +155,7 @@ impl<T> AtomicStampedPtr<T> {
     pub fn swap(&self, ptr: *mut T) -> *mut T {
         let mut current = PtrContainer::default();
         let mut successor = current.successor();
-        while !cas_ptr(self.p.get(), &mut current, PtrContainer::new(ptr, successor)) {
+        while !cas_ptr(self.p, &mut current, PtrContainer::new(ptr, successor)) {
             successor = current.successor();
         }
         current.ptr
@@ -163,7 +180,7 @@ impl<T> AtomicStampedPtr<T> {
     pub fn compare_and_swap(&self, current: (*mut T, usize), ptr: *mut T) -> (*mut T, usize) {
         let mut current = PtrContainer::new(current.0, current.1);
         let relief = PtrContainer::new(ptr, current.successor());
-        cas_ptr(self.p.get(), &mut current, relief);
+        cas_ptr(self.p, &mut current, relief);
         (current.ptr, current.version)
     }
 
@@ -185,7 +202,7 @@ impl<T> AtomicStampedPtr<T> {
     pub fn compare_exchange(&self, current: (*mut T, usize), ptr: *mut T) -> Result<(*mut T, usize), (*mut T, usize)> {
         let mut current = PtrContainer::new(current.0, current.1);
         let relief = PtrContainer::new(ptr, current.successor());
-        if cas_ptr(self.p.get(), &mut current, relief) {
+        if cas_ptr(self.p, &mut current, relief) {
             Ok((current.ptr, current.version))
         } else {
             Err((current.ptr, current.version))

@@ -1,6 +1,6 @@
 [package]
 name = "atomic-stamped-ptr"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Jos <gnu.crazier@gmail.com>"]
 description = "AtomicStampedPtr for x86_64"
 documentation = "https://github.com/lucklove/atomic-stamped-ptr"
